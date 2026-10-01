@@ -12,251 +12,106 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""OAuth 2.0 Async Credentials.
 
-"""Interfaces for credentials."""
+This module provides credentials based on OAuth 2.0 access and refresh tokens.
+These credentials usually access resources on behalf of a user (resource
+owner).
 
-import abc
-import inspect
+Specifically, this is intended to use access tokens acquired using the
+`Authorization Code grant`_ and can refresh those tokens using a
+optional `refresh token`_.
 
-from google.auth import _regional_access_boundary_utils, credentials
+Obtaining the initial access and refresh token is outside of the scope of this
+module. Consult `rfc6749 section 4.1`_ for complete details on the
+Authorization Code grant flow.
+
+.. _Authorization Code grant: https://tools.ietf.org/html/rfc6749#section-1.3.1
+.. _refresh token: https://tools.ietf.org/html/rfc6749#section-6
+.. _rfc6749 section 4.1: https://tools.ietf.org/html/rfc6749#section-4.1
+"""
+
+from google.auth import _credentials_async as credentials
+from google.auth import _helpers, exceptions
+from google.oauth2 import _reauth_async as reauth
+from google.oauth2 import credentials as oauth2_credentials
 
 
-class Credentials(credentials.Credentials, metaclass=abc.ABCMeta):
-    """Async inherited credentials class from google.auth.credentials.
-    The added functionality is the before_request call which requires
-    async/await syntax.
-    All credentials have a :attr:`token` that is used for authentication and
-    may also optionally set an :attr:`expiry` to indicate when the token will
-    no longer be valid.
+class Credentials(oauth2_credentials.Credentials):
+    """Credentials using OAuth 2.0 access and refresh tokens.
 
-    Most credentials will be :attr:`invalid` until :meth:`refresh` is called.
-    Credentials can do this automatically before the first HTTP request in
-    :meth:`before_request`.
+    The credentials are considered immutable. If you want to modify the
+    quota project, use :meth:`with_quota_project` or ::
 
-    Although the token and expiration will change as the credentials are
-    :meth:`refreshed <refresh>` and used, credentials should be considered
-    immutable. Various credentials will accept configuration such as private
-    keys, scopes, and other options. These options are not changeable after
-    construction. Some classes will provide mechanisms to copy the credentials
-    with modifications such as :meth:`ScopedCredentials.with_scopes`.
+        credentials = credentials.with_quota_project('myproject-123)
     """
 
+    @_helpers.copy_docstring(credentials.Credentials)
+    async def refresh(self, request):
+        if (
+            self._refresh_token is None
+            or self._token_uri is None
+            or self._client_id is None
+            or self._client_secret is None
+        ):
+            raise exceptions.RefreshError(
+                "The credentials do not contain the necessary fields need to "
+                "refresh the access token. You must specify refresh_token, "
+                "token_uri, client_id, and client_secret."
+            )
+
+        (
+            access_token,
+            refresh_token,
+            expiry,
+            grant_response,
+            rapt_token,
+        ) = await reauth.refresh_grant(
+            request,
+            self._token_uri,
+            self._refresh_token,
+            self._client_id,
+            self._client_secret,
+            scopes=self._scopes,
+            rapt_token=self._rapt_token,
+            enable_reauth_refresh=self._enable_reauth_refresh,
+        )
+
+        self.token = access_token
+        self.expiry = expiry
+        self._refresh_token = refresh_token
+        self._id_token = grant_response.get("id_token")
+        self._rapt_token = rapt_token
+
+        if self._scopes and "scope" in grant_response:
+            requested_scopes = frozenset(self._scopes)
+            granted_scopes = frozenset(grant_response["scope"].split())
+            scopes_requested_but_not_granted = requested_scopes - granted_scopes
+            if scopes_requested_but_not_granted:
+                raise exceptions.RefreshError(
+                    "Not all requested scopes were granted by the "
+                    "authorization server, missing scopes {}.".format(
+                        ", ".join(scopes_requested_but_not_granted)
+                    )
+                )
+
+    @_helpers.copy_docstring(credentials.Credentials)
     async def before_request(self, request, method, url, headers):
-        """Performs credential-specific before request logic.
-
-        Refreshes the credentials if necessary, then calls :meth:`apply` to
-        apply the token to the authentication header.
-
-        Args:
-            request (google.auth.transport.Request): The object used to make
-                HTTP requests.
-            method (str): The request's HTTP method or the RPC method being
-                invoked.
-            url (str): The request's URI or the RPC service's URI.
-            headers (Mapping): The request's headers.
-        """
-        # pylint: disable=unused-argument
-        # (Subclasses may use these arguments to ascertain information about
-        # the http request.)
-
         if not self.valid:
-            if inspect.iscoroutinefunction(self.refresh):
-                await self.refresh(request)
-            else:
-                self.refresh(request)
-
-        if inspect.iscoroutinefunction(self._after_refresh):
-            await self._after_refresh(request, method, url, headers)
-        else:
-            self._after_refresh(request, method, url, headers)
-
+            await self.refresh(request)
         self.apply(headers)
 
-    def _after_refresh(self, request, method, url, headers):
-        """Hook for subclasses to perform actions after refresh but before
-        applying credentials to headers.
 
-        Args:
-            request (google.auth.transport.Request): The object used to make
-                HTTP requests.
-            method (str): The request's HTTP method or the RPC method being
-                invoked.
-            url (str): The request's URI or the RPC service's URI.
-            headers (Mapping[str, str]): The request's headers.
-        """
-        pass
+class UserAccessTokenCredentials(oauth2_credentials.UserAccessTokenCredentials):
+    """Access token credentials for user account.
 
-
-class CredentialsWithQuotaProject(credentials.CredentialsWithQuotaProject):
-    """Abstract base for credentials supporting ``with_quota_project`` factory"""
-
-
-class AnonymousCredentials(credentials.AnonymousCredentials, Credentials):
-    """Credentials that do not provide any authentication information.
-
-    These are useful in the case of services that support anonymous access or
-    local service emulators that do not use credentials. This class inherits
-    from the sync anonymous credentials file, but is kept if async credentials
-    is initialized and we would like anonymous credentials.
-    """
-
-
-class ReadOnlyScoped(credentials.ReadOnlyScoped, metaclass=abc.ABCMeta):
-    """Interface for credentials whose scopes can be queried.
-
-    OAuth 2.0-based credentials allow limiting access using scopes as described
-    in `RFC6749 Section 3.3`_.
-    If a credential class implements this interface then the credentials either
-    use scopes in their implementation.
-
-    Some credentials require scopes in order to obtain a token. You can check
-    if scoping is necessary with :attr:`requires_scopes`::
-
-        if credentials.requires_scopes:
-            # Scoping is required.
-            credentials = _credentials_async.with_scopes(scopes=['one', 'two'])
-
-    Credentials that require scopes must either be constructed with scopes::
-
-        credentials = SomeScopedCredentials(scopes=['one', 'two'])
-
-    Or must copy an existing instance using :meth:`with_scopes`::
-
-        scoped_credentials = _credentials_async.with_scopes(scopes=['one', 'two'])
-
-    Some credentials have scopes but do not allow or require scopes to be set,
-    these credentials can be used as-is.
-
-    .. _RFC6749 Section 3.3: https://tools.ietf.org/html/rfc6749#section-3.3
-    """
-
-
-class Scoped(credentials.Scoped):
-    """Interface for credentials whose scopes can be replaced while copying.
-
-    OAuth 2.0-based credentials allow limiting access using scopes as described
-    in `RFC6749 Section 3.3`_.
-    If a credential class implements this interface then the credentials either
-    use scopes in their implementation.
-
-    Some credentials require scopes in order to obtain a token. You can check
-    if scoping is necessary with :attr:`requires_scopes`::
-
-        if credentials.requires_scopes:
-            # Scoping is required.
-            credentials = _credentials_async.create_scoped(['one', 'two'])
-
-    Credentials that require scopes must either be constructed with scopes::
-
-        credentials = SomeScopedCredentials(scopes=['one', 'two'])
-
-    Or must copy an existing instance using :meth:`with_scopes`::
-
-        scoped_credentials = credentials.with_scopes(scopes=['one', 'two'])
-
-    Some credentials have scopes but do not allow or require scopes to be set,
-    these credentials can be used as-is.
-
-    .. _RFC6749 Section 3.3: https://tools.ietf.org/html/rfc6749#section-3.3
-    """
-
-
-def with_scopes_if_required(credentials, scopes):
-    """Creates a copy of the credentials with scopes if scoping is required.
-
-    This helper function is useful when you do not know (or care to know) the
-    specific type of credentials you are using (such as when you use
-    :func:`google.auth.default`). This function will call
-    :meth:`Scoped.with_scopes` if the credentials are scoped credentials and if
-    the credentials require scoping. Otherwise, it will return the credentials
-    as-is.
+    Obtain the access token for a given user account or the current active
+    user account with the ``gcloud auth print-access-token`` command.
 
     Args:
-        credentials (google.auth.credentials.Credentials): The credentials to
-            scope if necessary.
-        scopes (Sequence[str]): The list of scopes to use.
+        account (Optional[str]): Account to get the access token for. If not
+            specified, the current active account will be used.
+        quota_project_id (Optional[str]): The project ID used for quota
+            and billing.
 
-    Returns:
-        google.auth._credentials_async.Credentials: Either a new set of scoped
-            credentials, or the passed in credentials instance if no scoping
-            was required.
     """
-    if isinstance(credentials, Scoped) and credentials.requires_scopes:
-        return credentials.with_scopes(scopes)
-    else:
-        return credentials
-
-
-class Signing(credentials.Signing, metaclass=abc.ABCMeta):
-    """Interface for credentials that can cryptographically sign messages."""
-
-
-class CredentialsWithRegionalAccessBoundary(
-    Credentials, credentials.CredentialsWithRegionalAccessBoundary
-):
-    """Async base for credentials supporting regional access boundary configuration."""
-
-    def __init__(self):
-        super().__init__()
-        self._rab_manager.refresh_manager = (
-            _regional_access_boundary_utils._AsyncRegionalAccessBoundaryRefreshManager()
-        )
-
-    def __setstate__(self, state):
-        super().__setstate__(state)
-        self._rab_manager.refresh_manager = (
-            _regional_access_boundary_utils._AsyncRegionalAccessBoundaryRefreshManager()
-        )
-
-    async def _after_refresh(self, request, method, url, headers):
-        """Triggers the Regional Access Boundary lookup asynchronously if necessary."""
-        await self._maybe_start_regional_access_boundary_refresh_async(request, url)
-
-    async def _maybe_start_regional_access_boundary_refresh_async(self, request, url):
-        """Starts a background refresh or performs a blocking refresh asynchronously.
-
-        Args:
-            request (google.auth.aio.transport.Request): The object used to make
-                HTTP requests.
-            url (str): The URL of the request.
-        """
-        # Do not perform a lookup if the request is for a regional endpoint.
-        if self._is_regional_endpoint(url):
-            return
-
-        # A refresh is only needed if the feature is enabled.
-        if not self._is_regional_access_boundary_lookup_required():
-            return
-
-        # Trigger background or blocking refresh if needed.
-        await self._rab_manager.maybe_start_refresh_async(self, request)
-
-    async def _lookup_regional_access_boundary(self, request, fail_fast=False):
-        """Calls the Regional Access Boundary lookup API asynchronously.
-
-        Args:
-            request (google.auth.aio.transport.Request): The object used to make
-                HTTP requests.
-            fail_fast (bool): Whether the lookup should fail fast (short timeout, no retries).
-
-        Returns:
-            Optional[Dict[str, str]]: The Regional Access Boundary information
-                returned by the lookup API, or None if the lookup failed.
-        """
-        url_builder = self._build_regional_access_boundary_lookup_url
-        if inspect.iscoroutinefunction(url_builder):
-            url = await url_builder(request=request)
-        else:
-            url = url_builder(request=request)
-
-        if not url:
-            return None
-
-        headers = {}
-        self._apply(headers)
-
-        from google.oauth2 import _client_async
-
-        return await _client_async._lookup_regional_access_boundary(
-            request, url, headers=headers, fail_fast=fail_fast
-        )
