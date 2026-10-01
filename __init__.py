@@ -1,75 +1,39 @@
-from . import caching
-from .callbacks import Callback
-from .compression import available_compressions
-from .core import get_fs_token_paths, open, open_files, open_local, url_to_fs
-from .exceptions import FSTimeoutError
-from .mapping import FSMap, get_mapper
-from .registry import (
-    available_protocols,
-    filesystem,
-    get_filesystem_class,
-    register_implementation,
-    registry,
+# Copyright (c) Facebook, Inc. and its affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+import torch
+from torch._functorch.deprecated import (
+    combine_state_for_ensemble,
+    functionalize,
+    grad,
+    grad_and_value,
+    hessian,
+    jacfwd,
+    jacrev,
+    jvp,
+    make_functional,
+    make_functional_with_buffers,
+    vjp,
+    vmap,
 )
-from .spec import AbstractFileSystem
 
-try:
-    from ._version import __version__  # noqa: F401
-except ImportError:
-    __version__ = "unknown"
+# utilities. Maybe these should go in their own namespace in the future?
+from torch._functorch.make_functional import (
+    FunctionalModule,
+    FunctionalModuleWithBuffers,
+)
 
-__all__ = [
-    "AbstractFileSystem",
-    "FSTimeoutError",
-    "FSMap",
-    "filesystem",
-    "register_implementation",
-    "get_filesystem_class",
-    "get_fs_token_paths",
-    "get_mapper",
-    "open",
-    "open_files",
-    "open_local",
-    "registry",
-    "caching",
-    "Callback",
-    "available_protocols",
-    "available_compressions",
-    "url_to_fs",
-]
+# Was never documented
+from torch._functorch.python_key import make_fx
 
 
-def process_entries():
-    try:
-        from importlib.metadata import entry_points
-    except ImportError:
-        return
-    if entry_points is not None:
-        try:
-            eps = entry_points()
-        except TypeError:
-            pass  # importlib-metadata < 0.8
-        else:
-            if hasattr(eps, "select"):  # Python 3.10+ / importlib_metadata >= 3.9.0
-                specs = eps.select(group="fsspec.specs")
-            else:
-                specs = eps.get("fsspec.specs", [])
-            registered_names = {}
-            for spec in specs:
-                err_msg = f"Unable to load filesystem from {spec}"
-                name = spec.name
-                if name in registered_names:
-                    continue
-                registered_names[name] = True
-                register_implementation(
-                    name,
-                    spec.value.replace(":", "."),
-                    errtxt=err_msg,
-                    # We take our implementations as the ones to overload with if
-                    # for some reason we encounter some, may be the same, already
-                    # registered
-                    clobber=True,
-                )
+# Top-level APIs. Please think carefully before adding something to the
+# top-level namespace:
+# - private helper functions should go into torch._functorch
+# - very experimental things should go into functorch.experimental
+# - compilation related things should go into functorch.compile
 
 
-process_entries()
+__version__ = torch.__version__
