@@ -1,110 +1,159 @@
 Metadata-Version: 2.4
-Name: cryptography
-Version: 50.0.1
+Name: exceptiongroup
+Version: 1.3.1
+Summary: Backport of PEP 654 (exception groups)
+Author-email: Alex Grönholm <alex.gronholm@nextday.fi>
+Requires-Python: >=3.7
+Description-Content-Type: text/x-rst
 Classifier: Development Status :: 5 - Production/Stable
 Classifier: Intended Audience :: Developers
-Classifier: Natural Language :: English
-Classifier: Operating System :: MacOS :: MacOS X
-Classifier: Operating System :: POSIX
-Classifier: Operating System :: POSIX :: BSD
-Classifier: Operating System :: POSIX :: Linux
-Classifier: Operating System :: Microsoft :: Windows
+Classifier: License :: OSI Approved :: MIT License
 Classifier: Programming Language :: Python
-Classifier: Programming Language :: Python :: 3
 Classifier: Programming Language :: Python :: 3 :: Only
-Classifier: Programming Language :: Python :: 3.9
-Classifier: Programming Language :: Python :: 3.10
-Classifier: Programming Language :: Python :: 3.11
-Classifier: Programming Language :: Python :: 3.12
-Classifier: Programming Language :: Python :: 3.13
-Classifier: Programming Language :: Python :: 3.14
-Classifier: Programming Language :: Python :: Implementation :: CPython
-Classifier: Programming Language :: Python :: Implementation :: PyPy
-Classifier: Programming Language :: Python :: Free Threading :: 3 - Stable
-Classifier: Topic :: Security :: Cryptography
-Requires-Dist: cffi>=2.0.0 ; platform_python_implementation != 'PyPy'
-Requires-Dist: typing-extensions>=4.13.2 ; python_full_version < '3.11'
-Requires-Dist: bcrypt>=3.1.5 ; extra == 'ssh'
-Provides-Extra: ssh
+Classifier: Typing :: Typed
 License-File: LICENSE
-License-File: LICENSE.APACHE
-License-File: LICENSE.BSD
-Summary: cryptography is a package which provides cryptographic recipes and primitives to Python developers.
-Author-email: The Python Cryptographic Authority and individual contributors <cryptography-dev@python.org>
-License-Expression: Apache-2.0 OR BSD-3-Clause
-Requires-Python: >=3.9, !=3.9.0, !=3.9.1
-Description-Content-Type: text/x-rst; charset=UTF-8
-Project-URL: changelog, https://cryptography.io/en/latest/changelog/
-Project-URL: documentation, https://cryptography.io/
-Project-URL: homepage, https://github.com/pyca/cryptography
-Project-URL: issues, https://github.com/pyca/cryptography/issues
-Project-URL: source, https://github.com/pyca/cryptography/
+Requires-Dist: typing-extensions >= 4.6.0; python_version < '3.13'
+Requires-Dist: pytest >= 6 ; extra == "test"
+Project-URL: Changelog, https://github.com/agronholm/exceptiongroup/blob/main/CHANGES.rst
+Project-URL: Issue Tracker, https://github.com/agronholm/exceptiongroup/issues
+Project-URL: Source code, https://github.com/agronholm/exceptiongroup
+Provides-Extra: test
 
-pyca/cryptography
-=================
+.. image:: https://github.com/agronholm/exceptiongroup/actions/workflows/test.yml/badge.svg
+  :target: https://github.com/agronholm/exceptiongroup/actions/workflows/test.yml
+  :alt: Build Status
+.. image:: https://coveralls.io/repos/github/agronholm/exceptiongroup/badge.svg?branch=main
+  :target: https://coveralls.io/github/agronholm/exceptiongroup?branch=main
+  :alt: Code Coverage
 
-.. image:: https://img.shields.io/pypi/v/cryptography.svg
-    :target: https://pypi.org/project/cryptography/
-    :alt: Latest Version
+This is a backport of the ``BaseExceptionGroup`` and ``ExceptionGroup`` classes from
+Python 3.11.
 
-.. image:: https://readthedocs.org/projects/cryptography/badge/?version=latest
-    :target: https://cryptography.io
-    :alt: Latest Docs
+It contains the following:
 
-.. image:: https://github.com/pyca/cryptography/actions/workflows/ci.yml/badge.svg
-    :target: https://github.com/pyca/cryptography/actions/workflows/ci.yml?query=branch%3Amain
+* The  ``exceptiongroup.BaseExceptionGroup`` and ``exceptiongroup.ExceptionGroup``
+  classes
+* A utility function (``exceptiongroup.catch()``) for catching exceptions possibly
+  nested in an exception group
+* Patches to the ``TracebackException`` class that properly formats exception groups
+  (installed on import)
+* An exception hook that handles formatting of exception groups through
+  ``TracebackException`` (installed on import)
+* Special versions of some of the functions from the ``traceback`` module, modified to
+  correctly handle exception groups even when monkey patching is disabled, or blocked by
+  another custom exception hook:
 
-``cryptography`` is a package which provides cryptographic recipes and
-primitives to Python developers. Our goal is for it to be your "cryptographic
-standard library". It supports Python 3.9+ and PyPy3 7.3.11+.
+  * ``traceback.format_exception()``
+  * ``traceback.format_exception_only()``
+  * ``traceback.print_exception()``
+  * ``traceback.print_exc()``
+* A backported version of ``contextlib.suppress()`` from Python 3.12.1 which also
+  handles suppressing exceptions inside exception groups
 
-``cryptography`` includes both high level recipes and low level interfaces to
-common cryptographic algorithms such as symmetric ciphers, message digests, and
-key derivation functions. For example, to encrypt something with
-``cryptography``'s high level symmetric encryption recipe:
+If this package is imported on Python 3.11 or later, the built-in implementations of the
+exception group classes are used instead, ``TracebackException`` is not monkey patched
+and the exception hook won't be installed.
 
-.. code-block:: pycon
+See the `standard library documentation`_ for more information on exception groups.
 
-    >>> from cryptography.fernet import Fernet
-    >>> # Put this somewhere safe!
-    >>> key = Fernet.generate_key()
-    >>> f = Fernet(key)
-    >>> token = f.encrypt(b"A really secret message. Not for prying eyes.")
-    >>> token
-    b'...'
-    >>> f.decrypt(token)
-    b'A really secret message. Not for prying eyes.'
+.. _standard library documentation: https://docs.python.org/3/library/exceptions.html
 
-You can find more information in the `documentation`_.
+Catching exceptions
+===================
 
-You can install ``cryptography`` with:
+Due to the lack of the ``except*`` syntax introduced by `PEP 654`_ in earlier Python
+versions, you need to use ``exceptiongroup.catch()`` to catch exceptions that are
+potentially nested inside an exception group. This function returns a context manager
+that calls the given handler for any exceptions matching the sole argument.
 
-.. code-block:: console
+The argument to ``catch()`` must be a dict (or any ``Mapping``) where each key is either
+an exception class or an iterable of exception classes. Each value must be a callable
+that takes a single positional argument. The handler will be called at most once, with
+an exception group as an argument which will contain all the exceptions that are any
+of the given types, or their subclasses. The exception group may contain nested groups
+containing more matching exceptions.
 
-    $ pip install cryptography
+Thus, the following Python 3.11+ code:
 
-For full details see `the installation documentation`_.
+.. code-block:: python
 
-Discussion
-~~~~~~~~~~
+    try:
+        ...
+    except* (ValueError, KeyError) as excgroup:
+        for exc in excgroup.exceptions:
+            print('Caught exception:', type(exc))
+    except* RuntimeError:
+        print('Caught runtime error')
 
-If you run into bugs, you can file them in our `issue tracker`_.
+would be written with this backport like this:
 
-We maintain a `cryptography-dev`_ mailing list for development discussion.
+.. code-block:: python
 
-You can also join ``#pyca`` on ``irc.libera.chat`` to ask questions or get
-involved.
+    from exceptiongroup import BaseExceptionGroup, catch
 
-Security
-~~~~~~~~
+    def value_key_err_handler(excgroup: BaseExceptionGroup) -> None:
+        for exc in excgroup.exceptions:
+            print('Caught exception:', type(exc))
 
-Need to report a security issue? Please consult our `security reporting`_
-documentation.
+    def runtime_err_handler(exc: BaseExceptionGroup) -> None:
+        print('Caught runtime error')
 
+    with catch({
+        (ValueError, KeyError): value_key_err_handler,
+        RuntimeError: runtime_err_handler
+    }):
+        ...
 
-.. _`documentation`: https://cryptography.io/
-.. _`the installation documentation`: https://cryptography.io/en/latest/installation/
-.. _`issue tracker`: https://github.com/pyca/cryptography/issues
-.. _`cryptography-dev`: https://mail.python.org/mailman/listinfo/cryptography-dev
-.. _`security reporting`: https://cryptography.io/en/latest/security/
+**NOTE**: Just like with ``except*``, you cannot handle ``BaseExceptionGroup`` or
+``ExceptionGroup`` with ``catch()``.
+
+Suppressing exceptions
+======================
+
+This library contains a backport of the ``contextlib.suppress()`` context manager from
+Python 3.12.1. It allows you to selectively ignore certain exceptions, even when they're
+inside exception groups:
+
+.. code-block:: python
+
+    from exceptiongroup import suppress
+
+    with suppress(RuntimeError):
+        raise ExceptionGroup("", [RuntimeError("boo")])
+
+Notes on monkey patching
+========================
+
+To make exception groups render properly when an unhandled exception group is being
+printed out, this package does two things when it is imported on any Python version
+earlier than 3.11:
+
+#. The  ``traceback.TracebackException`` class is monkey patched to store extra
+   information about exception groups (in ``__init__()``) and properly format them (in
+   ``format()``)
+#. An exception hook is installed at ``sys.excepthook``, provided that no other hook is
+   already present. This hook causes the exception to be formatted using
+   ``traceback.TracebackException`` rather than the built-in rendered.
+
+If ``sys.exceptionhook`` is found to be set to something else than the default when
+``exceptiongroup`` is imported, no monkeypatching is done at all.
+
+To prevent the exception hook and patches from being installed, set the environment
+variable ``EXCEPTIONGROUP_NO_PATCH`` to ``1``.
+
+Formatting exception groups
+---------------------------
+
+Normally, the monkey patching applied by this library on import will cause exception
+groups to be printed properly in tracebacks. But in cases when the monkey patching is
+blocked by a third party exception hook, or monkey patching is explicitly disabled,
+you can still manually format exceptions using the special versions of the ``traceback``
+functions, like ``format_exception()``, listed at the top of this page. They work just
+like their counterparts in the ``traceback`` module, except that they use a separately
+patched subclass of ``TracebackException`` to perform the rendering.
+
+Particularly in cases where a library installs its own exception hook, it is recommended
+to use these special versions to do the actual formatting of exceptions/tracebacks.
+
+.. _PEP 654: https://www.python.org/dev/peps/pep-0654/
 

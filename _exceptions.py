@@ -1,205 +1,336 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Generator
-from textwrap import dedent
-from typing import Any
+from collections.abc import Callable, Sequence
+from functools import partial
+from inspect import getmro, isclass
+from typing import TYPE_CHECKING, Generic, Type, TypeVar, cast, overload
 
-if sys.version_info < (3, 11):
-    from exceptiongroup import BaseExceptionGroup
+if sys.version_info < (3, 13):
+    from typing_extensions import TypeVar
+
+_BaseExceptionT_co = TypeVar(
+    "_BaseExceptionT_co", bound=BaseException, covariant=True, default=BaseException
+)
+_BaseExceptionT = TypeVar("_BaseExceptionT", bound=BaseException)
+_ExceptionT_co = TypeVar(
+    "_ExceptionT_co", bound=Exception, covariant=True, default=Exception
+)
+_ExceptionT = TypeVar("_ExceptionT", bound=Exception)
+# using typing.Self would require a typing_extensions dependency on py<3.11
+_ExceptionGroupSelf = TypeVar("_ExceptionGroupSelf", bound="ExceptionGroup")
+_BaseExceptionGroupSelf = TypeVar("_BaseExceptionGroupSelf", bound="BaseExceptionGroup")
 
 
-class BrokenResourceError(Exception):
-    """
-    Raised when trying to use a resource that has been rendered unusable due to external
-    causes (e.g. a send stream whose peer has disconnected).
-    """
+def check_direct_subclass(
+    exc: BaseException, parents: tuple[type[BaseException]]
+) -> bool:
+    for cls in getmro(exc.__class__)[:-1]:
+        if cls in parents:
+            return True
+
+    return False
 
 
-class BrokenWorkerProcess(Exception):
-    """
-    Raised by :meth:`~anyio.to_process.run_sync` if the worker process terminates abruptly or
-    otherwise misbehaves.
-    """
+def get_condition_filter(
+    condition: type[_BaseExceptionT]
+    | tuple[type[_BaseExceptionT], ...]
+    | Callable[[_BaseExceptionT_co], bool],
+) -> Callable[[_BaseExceptionT_co], bool]:
+    if isclass(condition) and issubclass(
+        cast(Type[BaseException], condition), BaseException
+    ):
+        return partial(check_direct_subclass, parents=(condition,))
+    elif isinstance(condition, tuple):
+        if all(isclass(x) and issubclass(x, BaseException) for x in condition):
+            return partial(check_direct_subclass, parents=condition)
+    elif callable(condition):
+        return cast("Callable[[BaseException], bool]", condition)
+
+    raise TypeError("expected a function, exception type or tuple of exception types")
 
 
-class BrokenWorkerInterpreter(Exception):
-    """
-    Raised by :meth:`~anyio.to_interpreter.run_sync` if an unexpected exception is
-    raised in the subinterpreter.
-    """
+def _derive_and_copy_attributes(self, excs):
+    eg = self.derive(excs)
+    eg.__cause__ = self.__cause__
+    eg.__context__ = self.__context__
+    eg.__traceback__ = self.__traceback__
+    if hasattr(self, "__notes__"):
+        # Create a new list so that add_note() only affects one exceptiongroup
+        eg.__notes__ = list(self.__notes__)
+    return eg
 
-    def __init__(self, excinfo: Any):
-        # This was adapted from concurrent.futures.interpreter.ExecutionFailed
-        msg = excinfo.formatted
-        if not msg:
-            if excinfo.type and excinfo.msg:
-                msg = f"{excinfo.type.__name__}: {excinfo.msg}"
-            else:
-                msg = excinfo.type.__name__ or excinfo.msg
 
-        super().__init__(msg)
-        self.excinfo = excinfo
+class BaseExceptionGroup(BaseException, Generic[_BaseExceptionT_co]):
+    """A combination of multiple unrelated exceptions."""
 
-    def __str__(self) -> str:
-        try:
-            formatted = self.excinfo.errdisplay
-        except Exception:
-            return super().__str__()
-        else:
-            return dedent(
-                f"""
-                {super().__str__()}
-
-                Uncaught in the interpreter:
-
-                {formatted}
-                """.strip()
+    def __new__(
+        cls: type[_BaseExceptionGroupSelf],
+        __message: str,
+        __exceptions: Sequence[_BaseExceptionT_co],
+    ) -> _BaseExceptionGroupSelf:
+        if not isinstance(__message, str):
+            raise TypeError(f"argument 1 must be str, not {type(__message)}")
+        if not isinstance(__exceptions, Sequence):
+            raise TypeError("second argument (exceptions) must be a sequence")
+        if not __exceptions:
+            raise ValueError(
+                "second argument (exceptions) must be a non-empty sequence"
             )
 
+        for i, exc in enumerate(__exceptions):
+            if not isinstance(exc, BaseException):
+                raise ValueError(
+                    f"Item {i} of second argument (exceptions) is not an exception"
+                )
 
-class BusyResourceError(Exception):
-    """
-    Raised when two tasks are trying to read from or write to the same resource
-    concurrently.
-    """
+        if cls is BaseExceptionGroup:
+            if all(isinstance(exc, Exception) for exc in __exceptions):
+                cls = ExceptionGroup
 
-    def __init__(self, action: str):
-        super().__init__(f"Another task is already {action} this resource")
+        if issubclass(cls, Exception):
+            for exc in __exceptions:
+                if not isinstance(exc, Exception):
+                    if cls is ExceptionGroup:
+                        raise TypeError(
+                            "Cannot nest BaseExceptions in an ExceptionGroup"
+                        )
+                    else:
+                        raise TypeError(
+                            f"Cannot nest BaseExceptions in {cls.__name__!r}"
+                        )
+
+        instance = super().__new__(cls, __message, __exceptions)
+        instance._exceptions = tuple(__exceptions)
+        return instance
+
+    def __init__(
+        self,
+        __message: str,
+        __exceptions: Sequence[_BaseExceptionT_co],
+        *args: object,
+    ) -> None:
+        BaseException.__init__(self, __message, __exceptions, *args)
+
+    def add_note(self, note: str) -> None:
+        if not isinstance(note, str):
+            raise TypeError(
+                f"Expected a string, got note={note!r} (type {type(note).__name__})"
+            )
+
+        if not hasattr(self, "__notes__"):
+            self.__notes__: list[str] = []
+
+        self.__notes__.append(note)
+
+    @property
+    def message(self) -> str:
+        return self.args[0]
+
+    @property
+    def exceptions(
+        self,
+    ) -> tuple[_BaseExceptionT_co | BaseExceptionGroup[_BaseExceptionT_co], ...]:
+        return tuple(self._exceptions)
+
+    @overload
+    def subgroup(
+        self, __condition: type[_ExceptionT] | tuple[type[_ExceptionT], ...]
+    ) -> ExceptionGroup[_ExceptionT] | None: ...
+
+    @overload
+    def subgroup(
+        self, __condition: type[_BaseExceptionT] | tuple[type[_BaseExceptionT], ...]
+    ) -> BaseExceptionGroup[_BaseExceptionT] | None: ...
+
+    @overload
+    def subgroup(
+        self,
+        __condition: Callable[[_BaseExceptionT_co | _BaseExceptionGroupSelf], bool],
+    ) -> BaseExceptionGroup[_BaseExceptionT_co] | None: ...
+
+    def subgroup(
+        self,
+        __condition: type[_BaseExceptionT]
+        | tuple[type[_BaseExceptionT], ...]
+        | Callable[[_BaseExceptionT_co | _BaseExceptionGroupSelf], bool],
+    ) -> BaseExceptionGroup[_BaseExceptionT] | None:
+        condition = get_condition_filter(__condition)
+        modified = False
+        if condition(self):
+            return self
+
+        exceptions: list[BaseException] = []
+        for exc in self.exceptions:
+            if isinstance(exc, BaseExceptionGroup):
+                subgroup = exc.subgroup(__condition)
+                if subgroup is not None:
+                    exceptions.append(subgroup)
+
+                if subgroup is not exc:
+                    modified = True
+            elif condition(exc):
+                exceptions.append(exc)
+            else:
+                modified = True
+
+        if not modified:
+            return self
+        elif exceptions:
+            group = _derive_and_copy_attributes(self, exceptions)
+            return group
+        else:
+            return None
+
+    @overload
+    def split(
+        self, __condition: type[_ExceptionT] | tuple[type[_ExceptionT], ...]
+    ) -> tuple[
+        ExceptionGroup[_ExceptionT] | None,
+        BaseExceptionGroup[_BaseExceptionT_co] | None,
+    ]: ...
+
+    @overload
+    def split(
+        self, __condition: type[_BaseExceptionT] | tuple[type[_BaseExceptionT], ...]
+    ) -> tuple[
+        BaseExceptionGroup[_BaseExceptionT] | None,
+        BaseExceptionGroup[_BaseExceptionT_co] | None,
+    ]: ...
+
+    @overload
+    def split(
+        self,
+        __condition: Callable[[_BaseExceptionT_co | _BaseExceptionGroupSelf], bool],
+    ) -> tuple[
+        BaseExceptionGroup[_BaseExceptionT_co] | None,
+        BaseExceptionGroup[_BaseExceptionT_co] | None,
+    ]: ...
+
+    def split(
+        self,
+        __condition: type[_BaseExceptionT]
+        | tuple[type[_BaseExceptionT], ...]
+        | Callable[[_BaseExceptionT_co], bool],
+    ) -> (
+        tuple[
+            ExceptionGroup[_ExceptionT] | None,
+            BaseExceptionGroup[_BaseExceptionT_co] | None,
+        ]
+        | tuple[
+            BaseExceptionGroup[_BaseExceptionT] | None,
+            BaseExceptionGroup[_BaseExceptionT_co] | None,
+        ]
+        | tuple[
+            BaseExceptionGroup[_BaseExceptionT_co] | None,
+            BaseExceptionGroup[_BaseExceptionT_co] | None,
+        ]
+    ):
+        condition = get_condition_filter(__condition)
+        if condition(self):
+            return self, None
+
+        matching_exceptions: list[BaseException] = []
+        nonmatching_exceptions: list[BaseException] = []
+        for exc in self.exceptions:
+            if isinstance(exc, BaseExceptionGroup):
+                matching, nonmatching = exc.split(condition)
+                if matching is not None:
+                    matching_exceptions.append(matching)
+
+                if nonmatching is not None:
+                    nonmatching_exceptions.append(nonmatching)
+            elif condition(exc):
+                matching_exceptions.append(exc)
+            else:
+                nonmatching_exceptions.append(exc)
+
+        matching_group: _BaseExceptionGroupSelf | None = None
+        if matching_exceptions:
+            matching_group = _derive_and_copy_attributes(self, matching_exceptions)
+
+        nonmatching_group: _BaseExceptionGroupSelf | None = None
+        if nonmatching_exceptions:
+            nonmatching_group = _derive_and_copy_attributes(
+                self, nonmatching_exceptions
+            )
+
+        return matching_group, nonmatching_group
+
+    @overload
+    def derive(self, __excs: Sequence[_ExceptionT]) -> ExceptionGroup[_ExceptionT]: ...
+
+    @overload
+    def derive(
+        self, __excs: Sequence[_BaseExceptionT]
+    ) -> BaseExceptionGroup[_BaseExceptionT]: ...
+
+    def derive(
+        self, __excs: Sequence[_BaseExceptionT]
+    ) -> BaseExceptionGroup[_BaseExceptionT]:
+        return BaseExceptionGroup(self.message, __excs)
+
+    def __str__(self) -> str:
+        suffix = "" if len(self._exceptions) == 1 else "s"
+        return f"{self.message} ({len(self._exceptions)} sub-exception{suffix})"
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self.args[0]!r}, {self.args[1]!r})"
 
 
-class ClosedResourceError(Exception):
-    """Raised when trying to use a resource that has been closed."""
+class ExceptionGroup(BaseExceptionGroup[_ExceptionT_co], Exception):
+    def __new__(
+        cls: type[_ExceptionGroupSelf],
+        __message: str,
+        __exceptions: Sequence[_ExceptionT_co],
+    ) -> _ExceptionGroupSelf:
+        return super().__new__(cls, __message, __exceptions)
 
+    if TYPE_CHECKING:
 
-class ConnectionFailed(OSError):
-    """
-    Raised when a connection attempt fails.
+        @property
+        def exceptions(
+            self,
+        ) -> tuple[_ExceptionT_co | ExceptionGroup[_ExceptionT_co], ...]: ...
 
-    .. note:: This class inherits from :exc:`OSError` for backwards compatibility.
-    """
+        @overload  # type: ignore[override]
+        def subgroup(
+            self, __condition: type[_ExceptionT] | tuple[type[_ExceptionT], ...]
+        ) -> ExceptionGroup[_ExceptionT] | None: ...
 
+        @overload
+        def subgroup(
+            self, __condition: Callable[[_ExceptionT_co | _ExceptionGroupSelf], bool]
+        ) -> ExceptionGroup[_ExceptionT_co] | None: ...
 
-def iterate_exceptions(
-    exception: BaseException,
-) -> Generator[BaseException, None, None]:
-    if isinstance(exception, BaseExceptionGroup):
-        for exc in exception.exceptions:
-            yield from iterate_exceptions(exc)
-    else:
-        yield exception
+        def subgroup(
+            self,
+            __condition: type[_ExceptionT]
+            | tuple[type[_ExceptionT], ...]
+            | Callable[[_ExceptionT_co], bool],
+        ) -> ExceptionGroup[_ExceptionT] | None:
+            return super().subgroup(__condition)
 
+        @overload
+        def split(
+            self, __condition: type[_ExceptionT] | tuple[type[_ExceptionT], ...]
+        ) -> tuple[
+            ExceptionGroup[_ExceptionT] | None, ExceptionGroup[_ExceptionT_co] | None
+        ]: ...
 
-class DelimiterNotFound(Exception):
-    """
-    Raised during
-    :meth:`~anyio.streams.buffered.BufferedByteReceiveStream.receive_until` if the
-    maximum number of bytes has been read without the delimiter being found.
-    """
+        @overload
+        def split(
+            self, __condition: Callable[[_ExceptionT_co | _ExceptionGroupSelf], bool]
+        ) -> tuple[
+            ExceptionGroup[_ExceptionT_co] | None, ExceptionGroup[_ExceptionT_co] | None
+        ]: ...
 
-    def __init__(self, max_bytes: int) -> None:
-        super().__init__(
-            f"The delimiter was not found among the first {max_bytes} bytes"
-        )
-
-
-class EndOfStream(Exception):
-    """
-    Raised when trying to read from a stream that has been closed from the other end.
-    """
-
-
-class IncompleteRead(Exception):
-    """
-    Raised during
-    :meth:`~anyio.streams.buffered.BufferedByteReceiveStream.receive_exactly` or
-    :meth:`~anyio.streams.buffered.BufferedByteReceiveStream.receive_until` if the
-    connection is closed before the requested amount of bytes has been read.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(
-            "The stream was closed before the read operation could be completed"
-        )
-
-
-class TypedAttributeLookupError(LookupError):
-    """
-    Raised by :meth:`~anyio.TypedAttributeProvider.extra` when the given typed attribute
-    is not found and no default value has been given.
-    """
-
-
-class WouldBlock(Exception):
-    """Raised by ``X_nowait`` functions if ``X()`` would block."""
-
-
-class NoEventLoopError(RuntimeError):
-    """
-    Raised by several functions that require an event loop to be running in the current
-    thread when there is no running event loop.
-
-    This is also raised by :func:`.from_thread.run` and :func:`.from_thread.run_sync`
-    if not calling from an AnyIO worker thread, and no ``token`` was passed.
-    """
-
-
-class RunFinishedError(RuntimeError):
-    """
-    Raised by :func:`.from_thread.run` and :func:`.from_thread.run_sync` if the event
-    loop associated with the explicitly passed token has already finished.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(
-            "The event loop associated with the given token has already finished"
-        )
-
-
-class TaskFailed(Exception):
-    """
-    Raised when awaiting on, or attempting to access the return value of, a
-    :class:`.TaskHandle` that raised an exception.
-    """
-
-
-class TaskCancelled(TaskFailed):
-    """
-    Raised when awaiting on, or attempting to access the return value of, a
-    :class:`.TaskHandle` that was cancelled.
-    """
-
-
-class TaskNotFinished(Exception):
-    """
-    Raised when attempting to access the return value or exception of a
-    :class:`.TaskHandle` that is still pending completion.
-    """
-
-
-class FutureFailed(Exception):
-    """
-    Raised when awaiting on, or attempting to access the return value of, a
-    :class:`.Future` that raised an exception.
-    """
-
-
-class FutureCancelled(FutureFailed):
-    """
-    Raised when attempting to access the return value or exception of a
-    :class:`.Future` that was cancelled.
-    """
-
-
-class FutureNotFinished(Exception):
-    """
-    Raised when attempting to access the return value or exception of a
-    :class:`.Future` that is still pending completion.
-    """
-
-
-class FutureAlreadyFinished(Exception):
-    """
-    Raised when attempting set a result of or await a
-    :class:`.Future` that has already completed.
-    """
+        def split(
+            self: _ExceptionGroupSelf,
+            __condition: type[_ExceptionT]
+            | tuple[type[_ExceptionT], ...]
+            | Callable[[_ExceptionT_co], bool],
+        ) -> tuple[
+            ExceptionGroup[_ExceptionT_co] | None, ExceptionGroup[_ExceptionT_co] | None
+        ]:
+            return super().split(__condition)
