@@ -12,13 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Google Auth AIO Library for Python."""
+API_VERSION_METADATA_KEY = "x-goog-api-version"
 
-import logging
 
-from google.auth import version as google_auth_version
+def to_api_version_header(version_identifier):
+    """Returns data for the API Version header for the given `version_identifier`.
 
-__version__ = google_auth_version.__version__
+    Args:
+        version_identifier (str): The version identifier to be used in the
+            tuple returned.
 
-# Set default logging handler to avoid "No handler found" warnings.
-logging.getLogger(__name__).addHandler(logging.NullHandler())
+    Returns:
+        Tuple(str, str): A tuple containing the API Version metadata key and
+            value.
+    """
+    return (API_VERSION_METADATA_KEY, version_identifier)
