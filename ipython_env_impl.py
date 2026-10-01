@@ -12,6 +12,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""IPythonEnvImpl."""
 from __future__ import annotations
 
-__version__ = "0.8.3"
+from typing import Any
+from google.generativeai.notebook import ipython_env
+from IPython.core import display as ipython_display
+
+
+class IPythonEnvImpl(ipython_env.IPythonEnv):
+    """Concrete implementation of IPythonEnv."""
+
+    def display(self, x: Any) -> None:
+        ipython_display.display(x)
+
+    def display_html(self, x: str) -> None:
+        ipython_display.display(ipython_display.HTML(x))

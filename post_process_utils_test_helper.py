@@ -12,6 +12,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Helper module for post_process_utils_test."""
 from __future__ import annotations
 
-__version__ = "0.8.3"
+from google.generativeai.notebook import post_process_utils
+
+
+def add_length(x: str) -> int:
+    return len(x)
+
+
+@post_process_utils.post_process_add_fn
+def add_length_decorated(x: str) -> int:
+    return len(x)
+
+
+@post_process_utils.post_process_replace_fn
+def to_upper(x: str) -> str:
+    return x.upper()

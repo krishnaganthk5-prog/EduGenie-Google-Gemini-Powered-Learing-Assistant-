@@ -12,6 +12,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Utilities for processing prompts."""
 from __future__ import annotations
 
-__version__ = "0.8.3"
+import string
+from typing import AbstractSet
+
+
+def get_placeholders(prompt: str) -> AbstractSet[str]:
+    """Returns the placeholders for `prompt`.
+
+    E.g. Given "A for {word_one} B for {word_two}", returns {"word_one",
+    "word_two"}.
+
+    Args:
+      prompt: A prompt template with optional placeholders.
+
+    Returns:
+      A sequence of placeholders in `prompt`.
+    """
+    placeholders: list[str] = []
+    for _, field_name, _, _ in string.Formatter().parse(prompt):
+        if field_name is not None:
+            placeholders.append(field_name)
+    return frozenset(placeholders)
