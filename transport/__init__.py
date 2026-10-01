@@ -1,4 +1,4 @@
-# Copyright 2024 Google LLC
+# Copyright 2016 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,85 +12,58 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Transport - Asynchronous HTTP client library support.
+"""Transport - HTTP client library support.
 
-:mod:`google.auth.aio` is designed to work with various asynchronous client libraries such
-as aiohttp. In order to work across these libraries with different
+:mod:`google.auth` is designed to work with various HTTP client libraries such
+as urllib3 and requests. In order to work across these libraries with different
 interfaces some abstraction is needed.
 
 This module provides two interfaces that are implemented by transport adapters
 to support HTTP libraries. :class:`Request` defines the interface expected by
-:mod:`google.auth` to make asynchronous requests. :class:`Response` defines the interface
+:mod:`google.auth` to make requests. :class:`Response` defines the interface
 for the return value of :class:`Request`.
 """
 
 import abc
-from typing import AsyncGenerator, Mapping, Optional
+import http.client as http_client
 
-import google.auth.transport
-
-_DEFAULT_TIMEOUT_SECONDS = 180
-
-DEFAULT_RETRYABLE_STATUS_CODES = google.auth.transport.DEFAULT_RETRYABLE_STATUS_CODES
+DEFAULT_RETRYABLE_STATUS_CODES = (
+    http_client.INTERNAL_SERVER_ERROR,
+    http_client.SERVICE_UNAVAILABLE,
+    http_client.GATEWAY_TIMEOUT,
+    http_client.REQUEST_TIMEOUT,
+    http_client.TOO_MANY_REQUESTS,
+)
 """Sequence[int]:  HTTP status codes indicating a request can be retried.
 """
 
 
-DEFAULT_MAX_RETRY_ATTEMPTS = 3
-"""int: How many times to retry a request."""
+DEFAULT_REFRESH_STATUS_CODES = (http_client.UNAUTHORIZED,)
+"""Sequence[int]:  Which HTTP status code indicate that credentials should be
+refreshed.
+"""
+
+DEFAULT_MAX_REFRESH_ATTEMPTS = 2
+"""int: How many times to refresh the credentials and retry a request."""
 
 
 class Response(metaclass=abc.ABCMeta):
-    """Asynchronous HTTP Response Interface."""
+    """HTTP Response data."""
 
-    @property
-    @abc.abstractmethod
-    def status_code(self) -> int:
-        """
-        The HTTP response status code.
+    @abc.abstractproperty
+    def status(self):
+        """int: The HTTP status code."""
+        raise NotImplementedError("status must be implemented.")
 
-        Returns:
-            int: The HTTP response status code.
-
-        """
-        raise NotImplementedError("status_code must be implemented.")
-
-    @property
-    @abc.abstractmethod
-    def headers(self) -> Mapping[str, str]:
-        """The HTTP response headers.
-
-        Returns:
-            Mapping[str, str]: The HTTP response headers.
-        """
+    @abc.abstractproperty
+    def headers(self):
+        """Mapping[str, str]: The HTTP response headers."""
         raise NotImplementedError("headers must be implemented.")
 
-    @abc.abstractmethod
-    async def content(self, chunk_size: int) -> AsyncGenerator[bytes, None]:
-        """The raw response content.
-
-        Args:
-            chunk_size (int): The size of each chunk.
-
-        Yields:
-            AsyncGenerator[bytes, None]: An asynchronous generator yielding
-            response chunks as bytes.
-        """
-        raise NotImplementedError("content must be implemented.")
-
-    @abc.abstractmethod
-    async def read(self) -> bytes:
-        """Read the entire response content as bytes.
-
-        Returns:
-            bytes: The entire response content.
-        """
-        raise NotImplementedError("read must be implemented.")
-
-    @abc.abstractmethod
-    async def close(self):
-        """Close the response after it is fully consumed to resource."""
-        raise NotImplementedError("close must be implemented.")
+    @abc.abstractproperty
+    def data(self):
+        """bytes: The response body."""
+        raise NotImplementedError("data must be implemented.")
 
 
 class Request(metaclass=abc.ABCMeta):
@@ -103,31 +76,25 @@ class Request(metaclass=abc.ABCMeta):
     """
 
     @abc.abstractmethod
-    async def __call__(
-        self,
-        url: str,
-        method: str,
-        body: Optional[bytes],
-        headers: Optional[Mapping[str, str]],
-        timeout: float,
-        **kwargs,
-    ) -> Response:
+    def __call__(
+        self, url, method="GET", body=None, headers=None, timeout=None, **kwargs
+    ):
         """Make an HTTP request.
 
         Args:
             url (str): The URI to be requested.
             method (str): The HTTP method to use for the request. Defaults
                 to 'GET'.
-            body (Optional[bytes]): The payload / body in HTTP request.
+            body (bytes): The payload / body in HTTP request.
             headers (Mapping[str, str]): Request headers.
-            timeout (float): The number of seconds to wait for a
+            timeout (Optional[int]): The number of seconds to wait for a
                 response from the server. If not specified or if None, the
                 transport-specific default timeout will be used.
-            kwargs: Additional arguments passed on to the transport's
+            kwargs: Additionally arguments passed on to the transport's
                 request method.
 
         Returns:
-            google.auth.aio.transport.Response: The HTTP response.
+            Response: The HTTP response.
 
         Raises:
             google.auth.exceptions.TransportError: If any exception occurred.
@@ -135,19 +102,3 @@ class Request(metaclass=abc.ABCMeta):
         # pylint: disable=redundant-returns-doc, missing-raises-doc
         # (pylint doesn't play well with abstract docstrings.)
         raise NotImplementedError("__call__ must be implemented.")
-
-    async def close(self) -> None:
-        """
-        Close the underlying session.
-        """
-        raise NotImplementedError("close must be implemented.")
-
-    def _clone(self) -> "Request":
-        """Creates a copy of this request adapter.
-
-        The base implementation returns `self` (an identical shared instance).
-        Transport adapters that maintain internal connection pools or stateful
-        sessions must override this method to return an independent, detached
-        adapter instance.
-        """
-        return self
