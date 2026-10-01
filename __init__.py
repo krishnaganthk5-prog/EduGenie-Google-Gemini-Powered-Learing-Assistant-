@@ -1,39 +1,40 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-# All rights reserved.
+# Copyright 2017 Google LLC
 #
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-import torch
-from torch._functorch.deprecated import (
-    combine_state_for_ensemble,
-    functionalize,
-    grad,
-    grad_and_value,
-    hessian,
-    jacfwd,
-    jacrev,
-    jvp,
-    make_functional,
-    make_functional_with_buffers,
-    vjp,
-    vmap,
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Google API Core.
+
+This package contains common code and utilities used by Google client libraries.
+"""
+
+from google.api_core import _python_package_support, _python_version_support
+from google.api_core import version as api_core_version
+
+__version__ = api_core_version.__version__
+
+# NOTE: Until dependent artifacts require this version of
+# google.api_core, the functionality below must be made available
+# manually in those artifacts.
+
+# expose dependency checks for external callers
+check_python_version = _python_version_support.check_python_version
+check_dependency_versions = _python_package_support.check_dependency_versions
+parse_version_to_tuple = _python_package_support.parse_version_to_tuple
+warn_deprecation_for_versions_less_than = (
+    _python_package_support.warn_deprecation_for_versions_less_than
 )
+DependencyConstraint = _python_package_support.DependencyConstraint
 
-# utilities. Maybe these should go in their own namespace in the future?
-from torch._functorch.make_functional import (
-    FunctionalModule,
-    FunctionalModuleWithBuffers,
-)
-
-# Was never documented
-from torch._functorch.python_key import make_fx
-
-
-# Top-level APIs. Please think carefully before adding something to the
-# top-level namespace:
-# - private helper functions should go into torch._functorch
-# - very experimental things should go into functorch.experimental
-# - compilation related things should go into functorch.compile
-
-
-__version__ = torch.__version__
+# perform version checks against api_core, and emit warnings if needed
+check_python_version(package="google.api_core")
+check_dependency_versions("google.api_core")
